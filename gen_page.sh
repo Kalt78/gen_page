@@ -1,368 +1,313 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-# =============================================================================
-# Скрипт установки Nginx, генерации фейковой страницы и базовой настройки
-# =============================================================================
-# Запуск: sudo bash this_script.sh your.domain.com
-# Требования: Ubuntu/Debian, root-доступ
-# После запуска: открой http://your.domain.com в браузере
+# ============================
+# Stage 1: Fake Cloud Workspace page + Nginx
+# ============================
 
-# Цвета для вывода
-GRN='\033[0;32m'
-RED='\033[0;31m'
-YEL='\033[1;33m'
-NC='\033[0m'
+# Colors
+GRN="\e[32m"
+RED="\e[31m"
+YEL="\e[33m"
+NC="\e[0m"
 
-# Проверка root
-if [[ $EUID -ne 0 ]]; then
-   echo -e "${RED}Ошибка: Запустите скрипт от root (sudo)${NC}"
-   exit 1
+log_info()  { echo -e "${GRN}[INFO]${NC} $*"; }
+log_warn()  { echo -e "${YEL}[WARN]${NC} $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $*"; }
+
+# 1. Root check
+if [[ "$EUID" -ne 0 ]]; then
+  log_error "Run this script as root (sudo)."
+  exit 1
 fi
 
-# Домен как аргумент
+# 2. Domain argument
 DOMAIN="$1"
 if [[ -z "$DOMAIN" ]]; then
-    echo -e "${RED}Ошибка: Укажите домен как аргумент (e.g., $0 example.com)${NC}"
+  log_error "Domain is not specified. Usage: $0 example.com"
+  exit 1
+fi
+
+WEBROOT="/var/www/${DOMAIN}"
+NGINX_CONF="/etc/nginx/sites-available/${DOMAIN}"
+
+log_info "Domain: ${DOMAIN}"
+
+# 3. Dependencies
+NEEDED_PKGS=(nginx curl jq dnsutils)
+TO_INSTALL=()
+
+for pkg in "${NEEDED_PKGS[@]}"; do
+  if ! dpkg -s "$pkg" >/dev/null 2>&1; then
+    TO_INSTALL+=("$pkg")
+  fi
+done
+
+if [[ ${#TO_INSTALL[@]} -gt 0 ]]; then
+  log_info "Installing missing packages: ${TO_INSTALL[*]}"
+  apt-get update -y >/dev/null 2>&1
+  apt-get install -y "${TO_INSTALL[@]}" >/dev/null 2>&1 || {
+    log_error "Failed to install required packages."
     exit 1
+  }
+else
+  log_info "All required packages are already installed."
 fi
 
-# Шаг 1: Обновление системы и установка зависимостей
-echo -e "${YEL}→ Обновляем систему и устанавливаем Nginx${NC}"
-apt update -y && apt upgrade -y
-apt install -y nginx curl wget nano || { echo -e "${RED}Ошибка установки пакетов${NC}"; exit 1; }
+# 4. Webroot
+log_info "Creating webroot: ${WEBROOT}"
+mkdir -p "${WEBROOT}"
 
-# Включение и запуск Nginx
-systemctl enable nginx
-systemctl start nginx
-systemctl status nginx > /dev/null || { echo -e "${RED}Nginx не запустился${NC}"; exit 1; }
-echo -e "${GRN}Nginx установлен и запущен${NC}"
+# 5. HTML page (rewritten on each run)
+INDEX_FILE="${WEBROOT}/index.html"
+log_info "Generating fake Cloud Workspace page..."
 
-# Шаг 2: Проверка DNS (опционально, но полезно)
-LOCAL_IP=$(hostname -I | awk '{print $1}')
-DNS_IP=$(dig +short "$DOMAIN")
-if [[ "$LOCAL_IP" != "$DNS_IP" ]]; then
-    echo -e "${YEL}Предупреждение: Локальный IP ($LOCAL_IP) не совпадает с DNS ($DNS_IP). Продолжить? (y/n)${NC}"
-    read -r confirm
-    if [[ "$confirm" != "y" ]]; then exit 0; fi
-fi
-
-# Шаг 3: Создание директории для сайта
-WWW_DIR="/var/www/$DOMAIN"
-mkdir -p "$WWW_DIR" || { echo -e "${RED}Не удалось создать $WWW_DIR${NC}"; exit 1; }
-chown -R www-data:www-data "$WWW_DIR"
-chmod -R 755 "$WWW_DIR"
-echo -e "${GRN}Директория $WWW_DIR создана${NC}"
-
-# Шаг 4: Генерация фейковой страницы (CloudSphere версия)
-INDEX_FILE="$WWW_DIR/index.html"
-
-cat > "$INDEX_FILE" << 'EOF'
+cat > "${INDEX_FILE}" <<'EOF'
 <!DOCTYPE html>
-<html lang="ru">
+<html lang="en">
 <head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-  <title>CloudSphere — Ваше облако</title>
-  <style>
-    :root {
-      --primary: #1e40af;
-      --primary-dark: #1e3a8a;
-      --bg: #f8fafc;
-      --card: white;
-      --text: #1e293b;
-      --text-light: #64748b;
-    }
+  <meta charset="UTF-8">
+  <title>Cloud Workspace — Sign in</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-    * {
+  <style>
+    body {
       margin: 0;
       padding: 0;
-      box-sizing: border-box;
-    }
-
-    body {
-      font-family: system-ui, -apple-system, sans-serif;
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.5;
-    }
-
-    header {
-      background: var(--primary);
-      color: white;
-      padding: 1rem 0;
-      position: sticky;
-      top: 0;
-      z-index: 100;
-      box-shadow: 0 2px 10px rgba(0,0,0,0.12);
+      background: #0e1a2b;
+      font-family: "Segoe UI", Roboto, sans-serif;
+      color: #e5e7eb;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
     }
 
     .container {
-      max-width: 1280px;
-      margin: 0 auto;
-      padding: 0 1.5rem;
-    }
-
-    .header-inner {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
+      width: 100%;
+      max-width: 420px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 16px;
+      padding: 32px 28px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 0 40px rgba(0, 0, 0, 0.45);
     }
 
     .logo {
-      font-size: 1.5rem;
+      display: flex;
+      justify-content: center;
+      margin-bottom: 24px;
+    }
+
+    .logo-circle {
+      width: 64px;
+      height: 64px;
+      border-radius: 50%;
+      background: linear-gradient(135deg, #3b82f6, #06b6d4);
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      font-size: 28px;
       font-weight: 700;
+      color: #0e1a2b;
+      box-shadow: 0 0 20px rgba(59, 130, 246, 0.4);
     }
 
-    nav a {
-      color: white;
-      text-decoration: none;
-      margin-left: 1.75rem;
-      font-weight: 500;
-    }
-
-    nav a:hover {
-      text-decoration: underline;
-    }
-
-    .hero {
-      background: linear-gradient(135deg, #1e40af 0%, #3b82f6 100%);
-      color: white;
+    h2 {
       text-align: center;
-      padding: 7rem 1rem 5rem;
-    }
-
-    .hero h1 {
-      font-size: 2.8rem;
-      margin-bottom: 1rem;
-    }
-
-    .hero p {
-      font-size: 1.25rem;
-      opacity: 0.95;
-      max-width: 600px;
-      margin: 0 auto 2.5rem;
-    }
-
-    .login-box {
-      background: white;
-      color: var(--text);
-      max-width: 420px;
-      margin: 0 auto;
-      padding: 2.2rem;
-      border-radius: 12px;
-      box-shadow: 0 10px 30px rgba(0,0,0,0.22);
-      display: none;
-    }
-
-    .login-box.show {
-      display: block;
-    }
-
-    input {
-      width: 100%;
-      padding: 0.9rem;
-      margin: 0.8rem 0;
-      border: 1px solid #d1d5db;
-      border-radius: 6px;
-      font-size: 1rem;
-    }
-
-    .btn {
-      background: var(--primary);
-      color: white;
-      border: none;
-      padding: 0.9rem 1.8rem;
-      border-radius: 6px;
-      font-size: 1.05rem;
-      cursor: pointer;
-      transition: 0.2s;
-    }
-
-    .btn:hover {
-      background: var(--primary-dark);
-    }
-
-    .files-section {
-      padding: 4rem 1rem;
-    }
-
-    .files-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 1.5rem;
-      margin-top: 2rem;
-    }
-
-    .file-card {
-      background: var(--card);
-      border: 1px solid #e2e8f0;
-      border-radius: 10px;
-      padding: 1.3rem;
-      text-align: center;
-      transition: all 0.15s;
-    }
-
-    .file-card:hover {
-      transform: translateY(-4px);
-      box-shadow: 0 8px 20px rgba(0,0,0,0.08);
-    }
-
-    .file-icon {
-      font-size: 3.8rem;
-      margin-bottom: 0.8rem;
-    }
-
-    .file-name {
+      margin-bottom: 8px;
+      font-size: 22px;
       font-weight: 600;
-      margin: 0.5rem 0 0.3rem;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
     }
 
-    .file-size {
-      color: var(--text-light);
-      font-size: 0.9rem;
-    }
-
-    .locked {
-      opacity: 0.55;
-      cursor: not-allowed;
-    }
-
-    footer {
-      background: #0f172a;
-      color: #94a3b8;
+    p {
       text-align: center;
-      padding: 2.5rem 1rem;
-      font-size: 0.95rem;
+      margin-bottom: 24px;
+      font-size: 13px;
+      color: #9ca3af;
     }
 
-    @media (max-width: 768px) {
-      .hero h1 { font-size: 2.2rem; }
-      .hero { padding: 5rem 1rem 4rem; }
-      nav { display: none; } /* упрощаем на мобилках */
+    .error-box {
+      display: none;
+      background: #7f1d1d;
+      color: #fca5a5;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 16px;
+      font-size: 13px;
+    }
+
+    .field {
+      margin-bottom: 16px;
+    }
+
+    .field label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 12px;
+      color: #cbd5e1;
+    }
+
+    .field input {
+      width: 100%;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid #1f2937;
+      background: #0b1624;
+      color: #e5e7eb;
+      font-size: 14px;
+      outline: none;
+      transition: 0.15s;
+    }
+
+    .field input:focus {
+      border-color: #3b82f6;
+      box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.35);
+    }
+
+    .checkbox {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      color: #9ca3af;
+      font-size: 12px;
+      margin-bottom: 18px;
+    }
+
+    .checkbox input {
+      width: 14px;
+      height: 14px;
+      accent-color: #3b82f6;
+    }
+
+    button {
+      width: 100%;
+      padding: 10px 12px;
+      border: none;
+      border-radius: 10px;
+      background: linear-gradient(135deg, #3b82f6, #06b6d4);
+      color: #0e1a2b;
+      font-weight: 600;
+      font-size: 14px;
+      cursor: pointer;
+      transition: 0.1s;
+      box-shadow: 0 10px 30px rgba(59, 130, 246, 0.35);
+    }
+
+    button:hover {
+      filter: brightness(1.05);
+    }
+
+    button:active {
+      transform: translateY(1px);
+      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.3);
+    }
+
+    .footer {
+      margin-top: 18px;
+      text-align: center;
+      font-size: 11px;
+      color: #64748b;
     }
   </style>
 </head>
+
 <body>
-
-<header>
   <div class="container">
-    <div class="header-inner">
-      <div class="logo">CloudSphere</div>
-      <nav>
-        <a href="#">Файлы</a>
-        <a href="#">Общий доступ</a>
-        <a href="#">Настройки</a>
-        <a href="#" onclick="toggleLogin()">Войти</a>
-      </nav>
+
+    <div class="logo">
+      <div class="logo-circle">C</div>
+    </div>
+
+    <h2>Sign in to Cloud Workspace</h2>
+    <p>Access your files, shared folders and workspace tools.</p>
+
+    <!-- ERROR BOX -->
+    <div id="auth-error" class="error-box">
+      Sign‑in failed. Please check your credentials.
+    </div>
+
+    <!-- REAL POST -->
+    <form method="POST" action="/login">
+      <div class="field">
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" placeholder="name@company.com" required>
+      </div>
+
+      <div class="field">
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" placeholder="••••••••" required>
+      </div>
+
+      <label class="checkbox">
+        <input type="checkbox" checked>
+        <span>Remember me</span>
+      </label>
+
+      <button type="submit">Sign in</button>
+    </form>
+
+    <div class="footer">
+      © Cloud Workspace — secure file platform
     </div>
   </div>
-</header>
 
-<section class="hero">
-  <div class="container">
-    <h1>Ваше безопасное облако</h1>
-    <p>Храните, синхронизируйте и делитесь файлами с любого устройства</p>
-
-    <div class="login-box" id="loginBox">
-      <h2 style="margin-bottom:1.5rem;">Вход в аккаунт</h2>
-      <form id="fakeForm">
-        <input type="email"    placeholder="Email или телефон" required autocomplete="off"/>
-        <input type="password" placeholder="Пароль" required autocomplete="off"/>
-        <button type="submit" class="btn" style="width:100%; margin-top:1rem;">Войти</button>
-        <p style="margin-top:1.2rem; text-align:center; font-size:0.95rem;">
-          <a href="#" style="color:var(--primary);">Забыли пароль?</a>
-        </p>
-      </form>
-    </div>
-  </div>
-</section>
-
-<section class="files-section">
-  <div class="container">
-    <h2>Недавние файлы</h2>
-
-    <div class="files-grid">
-      <div class="file-card">
-        <div class="file-icon">📄</div>
-        <div class="file-name">Коммерческое_предложение_2026.pdf</div>
-        <div class="file-size">3.2 МБ</div>
-      </div>
-      <div class="file-card">
-        <div class="file-icon">📸</div>
-        <div class="file-name">IMG_4782_отпуск.jpg</div>
-        <div class="file-size">7.8 МБ</div>
-      </div>
-      <div class="file-card">
-        <div class="file-icon">📊</div>
-        <div class="file-name">Финансовый_план_Q1-Q4.xlsx</div>
-        <div class="file-size">1.4 МБ</div>
-      </div>
-      <div class="file-card locked">
-        <div class="file-icon">🔒</div>
-        <div class="file-name">Договор_конфиденциальности.docx</div>
-        <div class="file-size">—</div>
-      </div>
-      <div class="file-card">
-        <div class="file-icon">🎥</div>
-        <div class="file-name">Презентация_команда.mp4</div>
-        <div class="file-size">68 МБ</div>
-      </div>
-    </div>
-  </div>
-</section>
-
-<footer>
-  <div class="container">
-    © 2024–2026 CloudSphere. Все права защищены.
-  </div>
-</footer>
-
-<script>
-  function toggleLogin() {
-    document.getElementById("loginBox").classList.toggle("show");
-  }
-
-  document.getElementById("fakeForm")?.addEventListener("submit", function(e) {
-    e.preventDefault();
-    alert("Неверный логин или пароль. Попробуйте снова.");
-  });
-</script>
+  <script>
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("auth") === "failed") {
+      const box = document.getElementById("auth-error");
+      if (box) box.style.display = "block";
+    }
+  </script>
 
 </body>
 </html>
 EOF
 
-chown www-data:www-data "$INDEX_FILE"
-chmod 644 "$INDEX_FILE"
-echo -e "${GRN}Фейковая страница сгенерирована: $INDEX_FILE${NC}"
+# 6. Nginx config (rewritten on each run)
+log_info "Generating Nginx config: ${NGINX_CONF}"
 
-# Шаг 5: Настройка Nginx конфига
-CONFIG_FILE="/etc/nginx/sites-available/$DOMAIN"
-
-cat > "$CONFIG_FILE" << EOF
+cat > "${NGINX_CONF}" <<EOF
 server {
     listen 80;
-    server_name $DOMAIN;
+    server_name ${DOMAIN};
 
-    root $WWW_DIR;
+    root ${WEBROOT};
     index index.html;
 
+    access_log /var/log/nginx/${DOMAIN}_access.log;
+    error_log  /var/log/nginx/${DOMAIN}_error.log;
+
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files \$uri \$uri/ =404;
+    }
+
+    # Realistic login endpoint: POST /login -> 302 /?auth=failed
+    location /login {
+        return 302 /?auth=failed;
     }
 }
 EOF
 
-ln -sf "$CONFIG_FILE" /etc/nginx/sites-enabled/
-nginx -t || { echo -e "${RED}Ошибка в конфиге Nginx${NC}"; exit 1; }
+# 7. Enable site
+ln -sf "${NGINX_CONF}" "/etc/nginx/sites-enabled/${DOMAIN}"
+
+# Disable default site
+if [[ -e /etc/nginx/sites-enabled/default ]]; then
+  log_warn "Disabling default Nginx site"
+  rm -f /etc/nginx/sites-enabled/default
+fi
+
+# 8. Test and restart Nginx
+log_info "Testing Nginx configuration..."
+if ! nginx -t; then
+  log_error "nginx -t failed. Check the config."
+  exit 1
+fi
+
+log_info "Restarting Nginx..."
+systemctl enable nginx >/dev/null 2>&1
 systemctl restart nginx
-echo -e "${GRN}Nginx настроен для $DOMAIN${NC}"
 
-# Шаг 6: Финальная проверка и вывод
-echo -e "${YEL}→ Тестирование:${NC}"
-curl -I "http://$DOMAIN" 2>/dev/null | grep "200 OK" && echo -e "${GRN}Страница доступна: http://$DOMAIN${NC}" || echo -e "${RED}Проблема с доступом. Проверьте DNS/фаервол${NC}"
-
-echo -e "${GRN}Установка завершена! Откройте http://$DOMAIN в браузере.${NC}"
+log_info "Done. Open in browser: http://${DOMAIN}"
